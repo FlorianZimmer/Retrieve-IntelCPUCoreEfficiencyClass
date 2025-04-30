@@ -55,20 +55,20 @@ PS> .\Get‑HybridCoreMap.ps1 -Json | ConvertFrom-Json
 ```text
 CPU CoreIndex CoreType EClass
 --- --------- -------- ------
- 0     0        P         2
- 1     0        P         2
- 2     1        P         2
- 3     1        P         2
- 4     2        E         0
- 5     3        E         0
- 6     4        E         0
- 7     5        E         0
- 8     6        E         0
- 9     7        E         0
-10     8        E         0
-11     9        E         0
-12    10        E         0
-13    11        E         0
+ 0     0        P         1
+ 1     0        P         1
+ 2     2        E         0
+ 3     3        E         0
+ 4     4        E         0
+ 5     5        E         0
+ 6     6        E         0
+ 7     7        E         0
+ 8     8        E         0
+ 9     9        E         0
+10    10        P         1
+11    10        P         1
+12    12        E         0
+13    13        E         0
 ```
 
 ---
