@@ -1,4 +1,44 @@
-Add-Type @"
+<#!
+.SYNOPSIS
+ Maps Task‑Manager CPU graphs to Intel P‑ and E‑cores.
+
+.DESCRIPTION
+ Pure PowerShell script – no external modules or admin rights – that queries the
+ Windows kernel’s GetSystemCpuSetInformation API, reads the EfficiencyClass
+ byte for every logical processor, and labels each one as a P‑ (performance) or
+ E‑ (efficiency) core.  Works on Intel hybrid‑architecture CPUs from 12th‑Gen
+ through Core Ultra.
+
+.PARAMETER Raw
+ Returns the raw array of [pscustomobject] rows (one per logical CPU) instead of
+ a formatted table.
+
+.PARAMETER Json
+ Serialises the rows to JSON (Depth 3) – for logs, dashboards, etc.
+
+.EXAMPLE
+ PS> .\Get‑HybridCoreMap.ps1
+
+.EXAMPLE
+ PS> .\Get‑HybridCoreMap.ps1 -Raw | Where‑Object CoreType -eq 'P'
+
+.EXAMPLE
+ PS> .\Get‑HybridCoreMap.ps1 -Json | Out‑File coremap.json
+
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$Raw,
+    [switch]$Json
+)
+
+if ($Raw -and $Json) {
+    throw "Specify **either** -Raw **or** -Json, not both."
+}
+
+# -------------------------  native helper  -----------------------------
+Add-Type -Language C# @"
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -9,7 +49,7 @@ public static class CpuSetNative
     public struct SYSTEM_CPU_SET_INFORMATION
     {
         public UInt32 Size;
-        public int Type; // 0 = CpuSet
+        public int    Type;          // 0 = CpuSet
         public SYSTEM_CPU_SET CpuSet;
     }
 
@@ -18,33 +58,32 @@ public static class CpuSetNative
     {
         public UInt32 Id;
         public UInt16 Group;
-        public byte LogicalProcessorIndex;
-        public byte CoreIndex;
-        public byte LastLevelCacheIndex;
-        public byte NumaNodeIndex;
-        public byte EfficiencyClass; // correct order!
-        public byte AllFlags;
+        public byte   LogicalProcessorIndex;
+        public byte   CoreIndex;
+        public byte   LastLevelCacheIndex;
+        public byte   NumaNodeIndex;
+        public byte   EfficiencyClass;   // 0 = most efficient … higher = faster
+        public byte   AllFlags;          // bit0 = parked, bit1 = allocated, …
         public UInt32 Reserved;
         public UInt64 AllocationTag;
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetSystemCpuSetInformation(
-        IntPtr info, int len, ref int returned, IntPtr proc, uint flags);
+        IntPtr info, int len, ref int returned, IntPtr process, uint flags);
 
-    // return an array that PowerShell can consume
     public static SYSTEM_CPU_SET[] GetCpuSets()
     {
         int need = 0;
         GetSystemCpuSetInformation(IntPtr.Zero, 0, ref need, IntPtr.Zero, 0);
-        if (need == 0) return Array.Empty<SYSTEM_CPU_SET>();
+        if (need == 0)
+            return Array.Empty<SYSTEM_CPU_SET>();
 
         IntPtr buf = Marshal.AllocHGlobal(need);
         try
         {
             if (!GetSystemCpuSetInformation(buf, need, ref need, IntPtr.Zero, 0))
-                throw new System.ComponentModel.Win32Exception(
-                      Marshal.GetLastWin32Error());
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
             var list = new List<SYSTEM_CPU_SET>();
             int off = 0;
@@ -62,15 +101,32 @@ public static class CpuSetNative
 }
 "@
 
+# ---------------------------  gather data  -----------------------------
 $sets = [CpuSetNative]::GetCpuSets()
-$maxClass = ($sets | ForEach-Object EfficiencyClass | Measure-Object -Maximum).Maximum
+if (-not $sets) {
+    Write-Error "GetSystemCpuSetInformation not supported on this OS (< Windows 10 1903)."
+    return
+}
+
+$maxEClass = ($sets | ForEach-Object EfficiencyClass | Measure-Object -Maximum).Maximum
 $rows = foreach ($s in $sets) {
     [pscustomobject]@{
-        CPU = $s.LogicalProcessorIndex
+        CPU       = $s.LogicalProcessorIndex
         CoreIndex = $s.CoreIndex
-        CoreType = if ($s.EfficiencyClass -eq $maxClass) { 'P' } else { 'E' }
-        EClass = $s.EfficiencyClass
+        CoreType  = if ($s.EfficiencyClass -eq $maxEClass) { 'P' } else { 'E' }
+        EClass    = $s.EfficiencyClass
     }
 }
 
-$rows | Sort-Object CPU | Format-Table
+# ---------------------------  output  ----------------------------------
+$rows = $rows | Sort-Object CPU
+
+if ($Json) {
+    $rows | ConvertTo-Json -Depth 3
+}
+elseif ($Raw) {
+    $rows
+}
+else {
+    $rows | Format-Table
+}
