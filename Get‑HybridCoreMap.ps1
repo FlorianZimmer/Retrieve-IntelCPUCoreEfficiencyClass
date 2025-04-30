@@ -38,7 +38,7 @@ if ($Raw -and $Json) {
 }
 
 # -------------------------  native helper  -----------------------------
-Add-Type -Language C# @"
+Add-Type @"
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
