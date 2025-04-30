@@ -67,8 +67,8 @@ CPU CoreIndex CoreType EClass
  9     7        E         0
 10     8        E         0
 11     9        E         0
-12    10        E         0   # LP‑E
-13    11        E         0   # LP‑E
+12    10        E         0
+13    11        E         0
 ```
 
 ---
