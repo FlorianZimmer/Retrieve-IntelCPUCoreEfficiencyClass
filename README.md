@@ -76,7 +76,7 @@ CPU CoreIndex CoreType EClass
 ## Caveats
 * Windows versions prior to 1903 lack the `EfficiencyClass` field – the script will exit.
 * BIOS/firmware updates can renumber logical processors – rerun the script once after updating.
-* Currently limited to Intel hybrid CPUs; AMD support is on the roadmap.
+* Currently limited to Intel hybrid CPUs.
 
 ---
 
