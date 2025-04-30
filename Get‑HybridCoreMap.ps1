@@ -1,30 +1,32 @@
-<#!
+<#
 .SYNOPSIS
- Maps Task‑Manager CPU graphs to Intel P‑ and E‑cores.
+ Maps Task‑Manager CPU graphs to Intel **P‑, E‑, and LP‑E** cores.
 
 .DESCRIPTION
- Pure PowerShell script – no external modules or admin rights – that queries the
- Windows kernel’s GetSystemCpuSetInformation API, reads the EfficiencyClass
- byte for every logical processor, and labels each one as a P‑ (performance) or
- E‑ (efficiency) core.  Works on Intel hybrid‑architecture CPUs from 12th‑Gen
- through Core Ultra.
+ Pure PowerShell – no external modules or admin rights.  The script calls the
+ Windows kernel’s *GetSystemCpuSetInformation* API, reads each logical CPU’s
+ **EfficiencyClass** and **SchedulingClass** bytes, and labels the result:
+
+ * **P**  – performance core (highest EfficiencyClass)
+ * **E**  – efficiency core (EfficiencyClass = min, SchedulingClass > 0)
+ * **LP‑E** – low‑power efficiency core (EfficiencyClass = min, SchedulingClass = 0)
+
+Works on Intel hybrid CPUs from 12th‑Gen (Alder Lake) through Core Ultra.
 
 .PARAMETER Raw
- Returns the raw array of [pscustomobject] rows (one per logical CPU) instead of
- a formatted table.
+ Return the raw object array instead of a formatted table.
 
 .PARAMETER Json
- Serialises the rows to JSON (Depth 3) – for logs, dashboards, etc.
+ Output structured JSON (depth 3).
 
 .EXAMPLE
- PS> .\Get‑HybridCoreMap.ps1
+ PS> .\Get‑HybridCoreMap.ps1           # pretty table
 
 .EXAMPLE
- PS> .\Get‑HybridCoreMap.ps1 -Raw | Where‑Object CoreType -eq 'P'
+ PS> .\Get‑HybridCoreMap.ps1 -Raw | Where‑Object CoreType -eq 'LP-E'
 
 .EXAMPLE
  PS> .\Get‑HybridCoreMap.ps1 -Json | Out‑File coremap.json
-
 #>
 
 [CmdletBinding()]
@@ -34,11 +36,12 @@ param(
 )
 
 if ($Raw -and $Json) {
-    throw "Specify **either** -Raw **or** -Json, not both."
+    throw 'Specify **either** -Raw **or** -Json, not both.'
 }
 
-# -------------------------  native helper  -----------------------------
-Add-Type @"
+# -----------------------  compile helper type once  --------------------
+if (-not ('CpuSetNative' -as [type])) {
+    $src = @"
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -49,7 +52,7 @@ public static class CpuSetNative
     public struct SYSTEM_CPU_SET_INFORMATION
     {
         public UInt32 Size;
-        public int    Type;          // 0 = CpuSet
+        public int    Type;              // 0 = CpuSet
         public SYSTEM_CPU_SET CpuSet;
     }
 
@@ -63,31 +66,32 @@ public static class CpuSetNative
         public byte   LastLevelCacheIndex;
         public byte   NumaNodeIndex;
         public byte   EfficiencyClass;   // 0 = most efficient … higher = faster
-        public byte   AllFlags;          // bit0 = parked, bit1 = allocated, …
-        public UInt32 Reserved;
+        public byte   AllFlags;
+        public byte   SchedulingClass;   // 0 = LP‑E, >0 = E (Meteor Lake)
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+        public byte[] Padding;
         public UInt64 AllocationTag;
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetSystemCpuSetInformation(
-        IntPtr info, int len, ref int returned, IntPtr process, uint flags);
+        IntPtr info, int len, ref int retLen, IntPtr proc, uint flags);
 
     public static SYSTEM_CPU_SET[] GetCpuSets()
     {
-        int need = 0;
-        GetSystemCpuSetInformation(IntPtr.Zero, 0, ref need, IntPtr.Zero, 0);
-        if (need == 0)
-            return Array.Empty<SYSTEM_CPU_SET>();
+        int bytes = 0;
+        GetSystemCpuSetInformation(IntPtr.Zero, 0, ref bytes, IntPtr.Zero, 0);
+        if (bytes == 0) return Array.Empty<SYSTEM_CPU_SET>();
 
-        IntPtr buf = Marshal.AllocHGlobal(need);
+        IntPtr buf = Marshal.AllocHGlobal(bytes);
         try
         {
-            if (!GetSystemCpuSetInformation(buf, need, ref need, IntPtr.Zero, 0))
+            if (!GetSystemCpuSetInformation(buf, bytes, ref bytes, IntPtr.Zero, 0))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
             var list = new List<SYSTEM_CPU_SET>();
             int off = 0;
-            while (off < need)
+            while (off < bytes)
             {
                 IntPtr p = IntPtr.Add(buf, off);
                 var info = Marshal.PtrToStructure<SYSTEM_CPU_SET_INFORMATION>(p);
@@ -100,33 +104,47 @@ public static class CpuSetNative
     }
 }
 "@
+    Add-Type $src -ErrorAction Stop
+}
 
 # ---------------------------  gather data  -----------------------------
 $sets = [CpuSetNative]::GetCpuSets()
 if (-not $sets) {
-    Write-Error "GetSystemCpuSetInformation not supported on this OS (< Windows 10 1903)."
+    Write-Error 'GetSystemCpuSetInformation not supported on this OS (< Windows 10 1903).'
     return
 }
 
-$maxEClass = ($sets | ForEach-Object EfficiencyClass | Measure-Object -Maximum).Maximum
 $rows = foreach ($s in $sets) {
     [pscustomobject]@{
-        CPU       = $s.LogicalProcessorIndex
-        CoreIndex = $s.CoreIndex
-        CoreType  = if ($s.EfficiencyClass -eq $maxEClass) { 'P' } else { 'E' }
-        EClass    = $s.EfficiencyClass
+        CPU        = $s.LogicalProcessorIndex
+        CoreIndex  = $s.CoreIndex
+        EClass     = $s.EfficiencyClass
+        SClass     = $s.SchedulingClass
     }
 }
 
-# ---------------------------  output  ----------------------------------
+# --------  classification rules  --------
+$maxEClass = ($rows | Measure-Object EClass -Maximum).Maximum   # P‑cores
+$minEClass = ($rows | Measure-Object EClass -Minimum).Minimum   # E / LP‑E cores
+
+$rows | ForEach-Object {
+    $ctype = if ($_.EClass -eq $maxEClass) {
+        'P'
+    } elseif ($_.EClass -eq $minEClass -and $_.SClass -eq 0) {
+        'LP-E'
+    } else {
+        'E'
+    }
+    $_ | Add-Member CoreType $ctype -Force
+}
+
 $rows = $rows | Sort-Object CPU
 
+# ---------------------------  output  ----------------------------------
 if ($Json) {
     $rows | ConvertTo-Json -Depth 3
-}
-elseif ($Raw) {
+} elseif ($Raw) {
     $rows
-}
-else {
-    $rows | Format-Table
+} else {
+    $rows | Format-Table CPU,CoreIndex,CoreType,EClass,SClass
 }
