@@ -1,65 +1,58 @@
-Intel Hybrid-Core Mapper – PowerShell-only
+# Intel Hybrid‑Core Mapper – *PowerShell‑only*
+> Map Task‑Manager CPU graphs to **P‑** and **E‑cores** on Windows – no installs, no admin rights.
 
-    Map Task-Manager CPU graphs to P- and E-cores on Windows without installing anything
+---
 
-What is this?
+## ✨ Features
+- **100 % native** – pure PowerShell + Win32 API (`GetSystemCpuSetInformation`).
+- **Zero footprint** – runs in a stock Windows image; nothing to install or unblock.
+- **Works on every Intel hybrid CPU** from 12th Gen (Alder Lake) to Core Ultra (Meteor Lake).
+- **Consistent, deterministic output** – fixes common struct‑layout bugs that return random values.
 
-A single PowerShell script that calls the native GetSystemCpuSetInformation API to discover every logical processor’s EfficiencyClass.
-That byte is what Windows’ scheduler already uses to decide whether a core is “performance-oriented” (P-core) or “efficiency-oriented” (E-core / LP-E-core).
-The script prints a table like:
+---
 
-CPU CoreIndex CoreType EClass
---- --------- -------- ------
- 0     0        P         2
- 1     0        P         2
- ...  ...      ...       ...
-12    10        E         0   # LP-E
-13    11        E         0   # LP-E
+## Requirements
+|                | Minimum |
+|----------------|---------|
+| **OS**         | Windows 10 21H1 or newer (EfficiencyClass first surfaced in 1903) |
+| **Shell**      | Windows PowerShell 5.x **or** PowerShell 7+ (x86 & x64) |
+| **Privileges** | *None* – standard user session works |
 
-Use it once, memorize which Task-Manager charts are which cores, and you instantly understand your laptop’s workload distribution.
-Why another “which-core” tool?
+> **Note**   AMD hybrid parts are *not* yet supported (they use different scheduler hints).
 
-    100 % native – just stock PowerShell (Add-Type) and the Win32 API.
+---
 
-    No admin, no drivers, no downloads – runs in a locked-down corporate image or fresh Windows install.
+## How it works
+1. The script compiles ≈ 35 lines of C# at runtime with `Add-Type`.
+2. Calls **`GetSystemCpuSetInformation`** twice (probe size → retrieve data).
+3. Deserialises every `SYSTEM_CPU_SET_INFORMATION` structure.
+4. Detects the *highest* `EfficiencyClass` byte – Intel assigns the largest value to P‑cores.
+5. Emits a readable table mapping Task‑Manager CPU graphs (0…n) to real core types.
 
-    Works on all recent Intel hybrid CPUs – 12th Gen (Alder Lake) through Meteor Lake (Core Ultra), desktop or mobile.
+---
 
-    Consistent output – fixes the common struct-layout bugs that show random values.
+## Usage
+```powershell
+# basic
+PS> .\Get‑HybridCoreMap.ps1
 
-Requirements
+# get raw objects – great for piping or testing
+PS> .\Get‑HybridCoreMap.ps1 -Raw
 
-    Windows 10 21H1 / Windows 11 (the API first exposed EfficiencyClass in 1903).
+# machine‑readable JSON
+PS> .\Get‑HybridCoreMap.ps1 -Json | ConvertFrom-Json
+```
 
-    PowerShell 5.x or PowerShell 7+.
-    (32-bit and 64-bit both fine.)
+### Options
+| Switch | Description |
+|--------|-------------|
+| `-Raw` | Return the array of CPU‑set structures instead of a formatted table |
+| `-Json` | Output structured JSON (handy for logs/dashboards) |
 
-How it works
+---
 
-    Compiles ~35 lines of C# on-the-fly with Add-Type.
-
-    Calls kernel32!GetSystemCpuSetInformation twice
-    (probe for buffer size, then fill).
-
-    Deserialises each SYSTEM_CPU_SET_INFORMATION entry.
-
-    Picks the highest EfficiencyClass byte as the P-core marker (Intel always uses the largest value for the fastest cores).
-
-    Emits a neat table.
-
-Usage
-
-.\Get-HybridCoreMap.ps1          # normal user shell
-
-Optional parameters:
-
-    -Raw  returns the array of structures instead of a table
-
-    -Json outputs structured JSON (handy for logging / dashboards)
-
-Typical output (Core Ultra 7 155U, 2 P + 8 E + 2 LP-E)
-
-PS> .\Get-HybridCoreMap.ps1
+## Example output (Core Ultra 7 155U – 2 P + 8 E + 2 LP‑E)
+```text
 CPU CoreIndex CoreType EClass
 --- --------- -------- ------
  0     0        P         2
@@ -74,19 +67,19 @@ CPU CoreIndex CoreType EClass
  9     7        E         0
 10     8        E         0
 11     9        E         0
-12    10        E         0   # LP-E
-13    11        E         0   # LP-E
+12    10        E         0   # LP‑E
+13    11        E         0   # LP‑E
+```
 
-Caveats
+---
 
-    AMD hybrid parts are not supported yet – their scheduler hints use different values.
+## Caveats
+* Windows versions prior to 1903 lack the `EfficiencyClass` field – the script will exit.
+* BIOS/firmware updates can renumber logical processors – rerun the script once after updating.
+* Currently limited to Intel hybrid CPUs; AMD support is on the roadmap.
 
-    Windows versions prior to 1903 lack the EfficiencyClass field.
+---
 
-    Results can change after a firmware update that re-orders logical-CPU numbers; rerun the script once after a BIOS update.
+## License
+[MIT](LICENSE) – free to use, modify, and distribute.  Pull requests are welcome!
 
-License
-
-MIT – do whatever you like, just keep the copyright header.
-
-Enjoy painless core mapping!
